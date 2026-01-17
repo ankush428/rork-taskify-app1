@@ -40,12 +40,63 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     isAuthenticated: false,
   });
 
+  // Function to create or update user profile in Supabase
+  // Note: Database trigger handles initial creation, this handles updates
+  const createOrUpdateUserProfile = async (supabaseUser: SupabaseUser) => {
+    try {
+      const profileData = {
+        id: supabaseUser.id,
+        email: supabaseUser.email || '',
+        name: supabaseUser.user_metadata?.full_name || 
+              supabaseUser.user_metadata?.name || 
+              'User',
+        avatar: supabaseUser.user_metadata?.avatar_url || null,
+        is_pro: false,
+        updated_at: new Date().toISOString(),
+      };
+
+      // Try to update first (in case profile already exists from trigger)
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          email: profileData.email,
+          name: profileData.name,
+          avatar: profileData.avatar,
+          updated_at: profileData.updated_at,
+        })
+        .eq('id', profileData.id);
+
+      // If update failed because profile doesn't exist, try insert
+      if (updateError && updateError.code === 'PGRST116') {
+        const { error: insertError } = await supabase
+          .from('profiles')
+          .insert(profileData);
+
+        if (insertError) {
+          // Silently fail - trigger will handle it
+          console.warn('[AuthProvider] Profile insert failed (may be handled by trigger):', insertError.message);
+        }
+      } else if (updateError) {
+        // Other errors - log but don't throw
+        console.warn('[AuthProvider] Profile update error:', updateError.message);
+      } else {
+        console.log('[AuthProvider] Profile updated successfully');
+      }
+    } catch (error) {
+      // Silently handle errors - database trigger will create profile automatically
+      console.warn('[AuthProvider] Profile update error (non-critical):', error);
+    }
+  };
+
   useEffect(() => {
     console.log('[AuthProvider] Initializing auth state...');
     
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       console.log('[AuthProvider] Initial session:', session ? 'exists' : 'null');
       if (session?.user) {
+        // Create/update profile on initial load
+        await createOrUpdateUserProfile(session.user);
+        
         setAuthState({
           user: mapSupabaseUser(session.user),
           session,
@@ -57,9 +108,14 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       console.log('[AuthProvider] Auth state changed:', _event);
       if (session?.user) {
+        // Create/update profile on auth state change (sign in/sign up)
+        if (_event === 'SIGNED_IN' || _event === 'SIGNED_UP' || _event === 'TOKEN_REFRESHED') {
+          await createOrUpdateUserProfile(session.user);
+        }
+        
         setAuthState({
           user: mapSupabaseUser(session.user),
           session,
@@ -121,7 +177,18 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           await supabase.auth.updateUser({
             data: { full_name: fullName },
           });
+          
+          // Update the user object with full name
+          data.user.user_metadata = {
+            ...data.user.user_metadata,
+            full_name: fullName,
+          };
         }
+      }
+
+      // Ensure profile is created after sign in
+      if (data.user) {
+        await createOrUpdateUserProfile(data.user);
       }
 
       return data;
@@ -136,16 +203,32 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
   const { mutate: signInWithEmailMutate, isPending: isEmailSigningIn } = useMutation({
     mutationFn: async ({ email, password }: { email: string; password: string }) => {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-      if (error) throw error;
-      return data;
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
+        return data;
+      } catch (error: any) {
+        console.error('[AuthProvider] Email sign-in error:', error);
+        console.error('[AuthProvider] Error name:', error?.name);
+        console.error('[AuthProvider] Error message:', error?.message);
+        console.error('[AuthProvider] Supabase URL:', process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://yfmmxydfpllcyulmbucu.supabase.co');
+        throw error;
+      }
     },
     onError: (error: Error) => {
       console.error('[AuthProvider] Email sign-in error:', error);
-      Alert.alert('Sign In Failed', error.message);
+      let errorMessage = error.message || 'Unable to sign in. Please check your internet connection.';
+      
+      if (error.message?.includes('Network request failed')) {
+        errorMessage = 'Network error: Please check your internet connection and try again.';
+      } else if (error.message?.includes('Database error')) {
+        errorMessage = 'Server error: Please try again later.';
+      }
+      
+      Alert.alert('Sign In Failed', errorMessage);
     },
   });
 
@@ -159,6 +242,12 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         },
       });
       if (error) throw error;
+      
+      // Create profile after signup
+      if (data.user) {
+        await createOrUpdateUserProfile(data.user);
+      }
+      
       return data;
     },
     onError: (error: Error) => {

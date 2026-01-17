@@ -9,9 +9,9 @@ import {
   Platform,
 } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
-
 import {
   Calendar,
+  Clock,
   Flag,
   Folder,
   X,
@@ -46,6 +46,8 @@ export default function NewTaskScreen() {
   const [priority, setPriority] = useState<Priority>('medium');
   const [category, setCategory] = useState<TaskCategory>('personal');
   const [dueDate, setDueDate] = useState('');
+  const [dueTime, setDueTime] = useState(''); // Stored as 24-hour format (HH:MM)
+  const [timeDisplay, setTimeDisplay] = useState(''); // Display as 12-hour format with AM/PM
 
   const handleClose = () => {
     router.back();
@@ -65,7 +67,8 @@ export default function NewTaskScreen() {
       priority,
       category,
       status: 'pending',
-      dueDate: dueDate || new Date().toISOString().split('T')[0],
+      dueDate: dueDate || undefined,
+      dueTime: dueTime || undefined,
     });
 
     router.back();
@@ -91,6 +94,46 @@ export default function NewTaskScreen() {
     const nextWeek = new Date();
     nextWeek.setDate(nextWeek.getDate() + 7);
     return nextWeek.toISOString().split('T')[0];
+  };
+
+
+  const formatDisplayDate = (dateStr: string) => {
+    if (!dateStr) return 'Select date';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  };
+
+  const formatTimeTo12Hour = (time24: string): string => {
+    if (!time24) return '';
+    const [hours, minutes] = time24.split(':');
+    const hour = parseInt(hours, 10);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const hour12 = hour % 12 || 12;
+    return `${hour12}:${minutes || '00'} ${ampm}`;
+  };
+
+  const formatTimeTo24Hour = (time12: string): string => {
+    if (!time12) return '';
+    // Handle formats like "9:30 AM", "09:30 PM", "9:30AM", etc.
+    const cleanTime = time12.trim().toUpperCase();
+    const hasAM = cleanTime.includes('AM');
+    const hasPM = cleanTime.includes('PM');
+    const timePart = cleanTime.replace(/\s*(AM|PM)/i, '');
+    const [hours, minutes = '00'] = timePart.split(':');
+    let hour24 = parseInt(hours, 10);
+    
+    if (hasPM && hour24 !== 12) {
+      hour24 += 12;
+    } else if (hasAM && hour24 === 12) {
+      hour24 = 0;
+    }
+    
+    return `${hour24.toString().padStart(2, '0')}:${minutes.padStart(2, '0')}`;
   };
 
   return (
@@ -140,15 +183,21 @@ export default function NewTaskScreen() {
         <View style={styles.inputGroup}>
           <View style={styles.labelRow}>
             <Calendar size={18} color={Colors.primary} />
-            <Text style={styles.label}>Due Date</Text>
+            <Text style={styles.label}>Due Date & Time</Text>
           </View>
+          
+          {/* Quick Date Buttons */}
           <View style={styles.quickDates}>
             <TouchableOpacity
               style={[
                 styles.quickDateButton,
                 dueDate === new Date().toISOString().split('T')[0] && styles.quickDateButtonActive,
               ]}
-              onPress={() => setDueDate(new Date().toISOString().split('T')[0])}
+              onPress={() => {
+                const today = new Date().toISOString().split('T')[0];
+                setDueDate(today);
+                Haptics.selectionAsync();
+              }}
             >
               <Text
                 style={[
@@ -164,7 +213,11 @@ export default function NewTaskScreen() {
                 styles.quickDateButton,
                 dueDate === getTomorrowDate() && styles.quickDateButtonActive,
               ]}
-              onPress={() => setDueDate(getTomorrowDate())}
+              onPress={() => {
+                const tomorrow = getTomorrowDate();
+                setDueDate(tomorrow);
+                Haptics.selectionAsync();
+              }}
             >
               <Text
                 style={[
@@ -180,7 +233,11 @@ export default function NewTaskScreen() {
                 styles.quickDateButton,
                 dueDate === getNextWeekDate() && styles.quickDateButtonActive,
               ]}
-              onPress={() => setDueDate(getNextWeekDate())}
+              onPress={() => {
+                const nextWeek = getNextWeekDate();
+                setDueDate(nextWeek);
+                Haptics.selectionAsync();
+              }}
             >
               <Text
                 style={[
@@ -191,6 +248,84 @@ export default function NewTaskScreen() {
                 Next Week
               </Text>
             </TouchableOpacity>
+          </View>
+
+          {/* Date Input */}
+          <View style={styles.dateTimeButton}>
+            <Calendar size={18} color={Colors.primary} />
+            <TextInput
+              style={[styles.dateTimeInput, dueDate && styles.dateTimeTextActive]}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={Colors.textTertiary}
+              value={dueDate}
+              onChangeText={(text) => {
+                // Simple validation for YYYY-MM-DD format
+                const formatted = text.replace(/[^0-9-]/g, '');
+                if (formatted.length <= 10) {
+                  setDueDate(formatted);
+                }
+              }}
+              keyboardType="numbers-and-punctuation"
+              maxLength={10}
+            />
+          </View>
+
+          {/* Time Input */}
+          <View style={styles.dateTimeButton}>
+            <Clock size={18} color={Colors.primary} />
+            <TextInput
+              style={[styles.dateTimeInput, timeDisplay && styles.dateTimeTextActive]}
+              placeholder="9:30 AM"
+              placeholderTextColor={Colors.textTertiary}
+              value={timeDisplay}
+              onChangeText={(text) => {
+                // Allow input with AM/PM
+                const upperText = text.toUpperCase();
+                // Keep only digits, colon, space, A, M, P
+                const cleaned = upperText.replace(/[^0-9:\sAPM]/g, '');
+                
+                // Update display value
+                setTimeDisplay(cleaned);
+                
+                // If it has AM/PM, convert and store as 24-hour format
+                if (cleaned.includes('AM') || cleaned.includes('PM')) {
+                  const converted = formatTimeTo24Hour(cleaned);
+                  if (converted) {
+                    setDueTime(converted);
+                  }
+                }
+              }}
+              onBlur={() => {
+                // Ensure proper format when user finishes
+                if (timeDisplay) {
+                  let finalTime = timeDisplay.trim().toUpperCase();
+                  
+                  // If it already has AM/PM, use it
+                  if (!finalTime.includes('AM') && !finalTime.includes('PM')) {
+                    // If just time without AM/PM, default to AM
+                    const timeMatch = finalTime.match(/^(\d{1,2}):(\d{0,2})$/);
+                    if (timeMatch) {
+                      finalTime = finalTime + ' AM';
+                    }
+                  }
+                  
+                  // Convert to 24-hour and store
+                  const converted = formatTimeTo24Hour(finalTime);
+                  if (converted) {
+                    setDueTime(converted);
+                    setTimeDisplay(formatTimeTo12Hour(converted));
+                  } else {
+                    setDueTime('');
+                    setTimeDisplay('');
+                  }
+                } else {
+                  setDueTime('');
+                  setTimeDisplay('');
+                }
+              }}
+              keyboardType="numbers-and-punctuation"
+              maxLength={8}
+            />
           </View>
         </View>
 
@@ -387,6 +522,32 @@ const styles = StyleSheet.create({
   },
   categoryTextActive: {
     color: Colors.primary,
+  },
+  dateTimeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.surface,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginTop: Spacing.sm,
+  },
+  dateTimeText: {
+    ...Typography.body,
+    color: Colors.textTertiary,
+    flex: 1,
+  },
+  dateTimeInput: {
+    ...Typography.body,
+    color: Colors.textTertiary,
+    flex: 1,
+    padding: 0,
+  },
+  dateTimeTextActive: {
+    color: Colors.text,
+    fontWeight: '500' as const,
   },
   footer: {
     position: 'absolute',

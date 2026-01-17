@@ -25,8 +25,12 @@ const ExpoSecureStoreAdapter = {
   },
 };
 
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+// Supabase configuration
+// In production, use environment variables from .env file:
+// EXPO_PUBLIC_SUPABASE_URL=https://yfmmxydfpllcyulmbucu.supabase.co
+// EXPO_PUBLIC_SUPABASE_ANON_KEY=your_anon_key_here
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://yfmmxydfpllcyulmbucu.supabase.co';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlmbW14eWRmcGxsY3l1bG1idWN1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2NjI3OTcsImV4cCI6MjA4NDIzODc5N30.AemsahgV6xaFl4Z1EMcaVd84MEHwZcxjJt7Nlzpqv7M';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
@@ -35,4 +39,13 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     detectSessionInUrl: false,
   },
+  global: {
+    headers: {
+      'x-client-info': 'taskify-app',
+    },
+  },
 });
+
+// Log Supabase configuration (for debugging)
+console.log('[Supabase] Initialized with URL:', supabaseUrl);
+console.log('[Supabase] Anon key configured:', supabaseAnonKey ? 'Yes' : 'No');

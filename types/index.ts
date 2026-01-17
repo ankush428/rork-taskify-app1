@@ -17,6 +17,9 @@ export interface Task {
   completedAt?: string;
   isRecurring?: boolean;
   recurringPattern?: string;
+  createdById?: string;
+  updatedById?: string;
+  updatedAt?: string;
 }
 
 export interface User {

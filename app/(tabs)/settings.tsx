@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import {
   ChevronRight,
@@ -21,7 +22,6 @@ import {
   Moon,
   Palette,
 } from 'lucide-react-native';
-import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
 import { Typography, Spacing, BorderRadius } from '@/constants/typography';
 import { useAuth } from '@/providers/AuthProvider';
@@ -67,6 +67,7 @@ export default function SettingsScreen() {
   const { user, signOut, isSigningOut } = useAuth();
   const [notificationsEnabled, setNotificationsEnabled] = React.useState(true);
   const [darkMode, setDarkMode] = React.useState(false);
+  const [versionPressCount, setVersionPressCount] = React.useState(0);
 
   const handleUpgrade = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -180,7 +181,24 @@ export default function SettingsScreen() {
               icon={<Info size={20} color={Colors.textSecondary} />}
               title="About Taskify"
               subtitle="Version 1.0.0"
-              onPress={() => {}}
+              onPress={async () => {
+                // Long press handler for admin access (5 taps)
+                const newCount = versionPressCount + 1;
+                setVersionPressCount(newCount);
+                
+                if (newCount >= 5) {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setVersionPressCount(0);
+                  // Check if user is admin before redirecting
+                  const { AdminService } = await import('@/lib/adminService');
+                  const isAdmin = await AdminService.isAdmin(user?.id || '', user?.email);
+                  if (isAdmin) {
+                    router.push('/admin');
+                  }
+                } else {
+                  setTimeout(() => setVersionPressCount(0), 2000);
+                }
+              }}
             />
           </View>
         </View>

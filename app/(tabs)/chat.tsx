@@ -19,6 +19,7 @@ import Colors from '@/constants/colors';
 import { Typography, Spacing, BorderRadius } from '@/constants/typography';
 import { useApp } from '@/providers/AppProvider';
 import { useAuth } from '@/providers/AuthProvider';
+import { AIService } from '@/lib/aiService';
 import ChatBubble from '@/components/ChatBubble';
 import ChatTaskCard from '@/components/ChatTaskCard';
 import { ChatMessage, Task } from '@/types';
@@ -28,7 +29,7 @@ interface EnhancedChatMessage extends ChatMessage {
 }
 
 export default function ChatScreen() {
-  const { chatMessages, addChatMessage, todayTasks, tasks } = useApp();
+  const { chatMessages, addChatMessage, todayTasks, tasks, addTask } = useApp();
   const { user } = useAuth();
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -60,14 +61,42 @@ export default function ChatScreen() {
     }
   }, [isTyping, typingAnim]);
 
-  const scrollToBottom = useCallback(() => {
+  // Auto-scroll when new messages arrive
+  useEffect(() => {
+    if (chatMessages.length > 0) {
+      scrollToBottom(true);
+    }
+  }, [chatMessages.length, scrollToBottom]);
+
+  // Handle keyboard show/hide for better scrolling
+  useEffect(() => {
+    const keyboardWillShow = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        setTimeout(() => scrollToBottom(false), 100);
+      }
+    );
+    const keyboardWillHide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        // Optional: scroll to bottom when keyboard hides
+      }
+    );
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardWillHide.remove();
+    };
+  }, [scrollToBottom]);
+
+  const scrollToBottom = useCallback((animated: boolean = true) => {
     setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
+      scrollViewRef.current?.scrollToEnd({ animated });
     }, 100);
   }, []);
 
   const handleSend = async () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || !user?.id) return;
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Keyboard.dismiss();
@@ -78,48 +107,56 @@ export default function ChatScreen() {
 
     setIsTyping(true);
 
-    setTimeout(() => {
+    try {
+      // Prepare conversation history
+      const conversationHistory = chatMessages.slice(-10).map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+
+      // Process message with AI service
+      const aiResponse = await AIService.processMessage(user.id, userMessage, conversationHistory);
+
       setIsTyping(false);
-      
-      const lowerMessage = userMessage.toLowerCase();
-      let response = '';
-      
-      if (lowerMessage.includes('today') || lowerMessage.includes('due')) {
-        if (todayTasks.length > 0) {
-          response = `You have ${todayTasks.length} task${todayTasks.length > 1 ? 's' : ''} due today:\n\n`;
-          todayTasks.slice(0, 3).forEach((task, i) => {
-            response += `${i + 1}. **${task.title}**${task.dueTime ? ` at ${task.dueTime}` : ''}\n`;
-          });
-          if (todayTasks.length > 3) {
-            response += `\n...and ${todayTasks.length - 3} more. Would you like me to show all of them?`;
+
+      // Add AI response
+      addChatMessage(aiResponse.reply, 'assistant');
+      scrollToBottom();
+
+      // If tasks were extracted, create them (with confirmation if required)
+      if (aiResponse.extractedTasks && aiResponse.extractedTasks.length > 0) {
+        if (!aiResponse.requiresConfirmation) {
+          // Auto-create tasks
+          for (const extractedTask of aiResponse.extractedTasks) {
+            addTask({
+              title: extractedTask.title,
+              description: extractedTask.description,
+              dueDate: extractedTask.dueDate,
+              dueTime: extractedTask.dueTime,
+              priority: extractedTask.priority || 'medium',
+              category: extractedTask.category || 'personal',
+              status: 'pending',
+              isRecurring: extractedTask.isRecurring,
+              recurringPattern: extractedTask.recurringPattern,
+            });
           }
         } else {
-          response = "Great news! You don't have any tasks due today. Would you like to plan for tomorrow or add a new task?";
+          // Show confirmation message - tasks will be created when user confirms
+          // For now, we'll create them but mention it in the response
+          const confirmMessage = `I've prepared ${aiResponse.extractedTasks.length} task${aiResponse.extractedTasks.length > 1 ? 's' : ''} for you. Would you like me to add ${aiResponse.extractedTasks.length > 1 ? 'them' : 'it'}?`;
+          addChatMessage(confirmMessage, 'assistant');
+          // TODO: Implement confirmation flow
         }
-      } else if (lowerMessage.includes('add') || lowerMessage.includes('create') || lowerMessage.includes('new task')) {
-        response = "I'd love to help you create a new task! You can tap the + button below to add one, or tell me:\n\n• What's the task title?\n• When is it due?\n• What priority should it have?";
-      } else if (lowerMessage.includes('help') || lowerMessage.includes('what can you do')) {
-        response = "I'm your AI task assistant! Here's what I can help you with:\n\n📋 **View tasks** - Ask about today's tasks, upcoming, or overdue\n✨ **Create tasks** - Help you add new tasks\n📊 **Analyze** - Give insights on your productivity\n⏰ **Remind** - Set up task reminders\n\nJust ask me anything!";
-      } else if (lowerMessage.includes('overdue') || lowerMessage.includes('late')) {
-        const overdue = tasks.filter(t => t.status === 'overdue');
-        if (overdue.length > 0) {
-          response = `You have ${overdue.length} overdue task${overdue.length > 1 ? 's' : ''}. Would you like me to help you reschedule them?`;
-        } else {
-          response = "You're all caught up! No overdue tasks. Keep up the great work! 🎉";
-        }
-      } else {
-        const responses = [
-          "I've analyzed your tasks and noticed you have a high-priority item due soon. Would you like me to help you break it down into smaller steps?",
-          "Great question! Based on your schedule, I'd recommend tackling your work tasks in the morning when you're most productive.",
-          "I can help you with that! Let me suggest some ways to organize your upcoming tasks more efficiently.",
-          "Looking at your task patterns, you seem to be most productive on weekday mornings. Should I help schedule your important tasks accordingly?",
-        ];
-        response = responses[Math.floor(Math.random() * responses.length)];
       }
+    } catch (error) {
+      console.error('[ChatScreen] Error processing message:', error);
+      setIsTyping(false);
       
-      addChatMessage(response, 'assistant');
+      // Fallback response
+      const fallbackResponse = "I'm having trouble processing that right now. Could you try rephrasing your request?";
+      addChatMessage(fallbackResponse, 'assistant');
       scrollToBottom();
-    }, 1200 + Math.random() * 800);
+    }
   };
 
   const handleSendPressIn = () => {
@@ -203,8 +240,12 @@ export default function ChatScreen() {
           style={styles.messagesContainer}
           contentContainerStyle={styles.messagesContent}
           showsVerticalScrollIndicator={false}
-          onContentSizeChange={scrollToBottom}
+          onContentSizeChange={() => scrollToBottom(false)}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          maintainVisibleContentPosition={{
+            minIndexForVisible: 0,
+          }}
         >
           <View style={styles.welcomeContainer}>
             <View style={styles.welcomeIcon}>
@@ -295,7 +336,13 @@ export default function ChatScreen() {
               onChangeText={setInputText}
               multiline
               maxLength={500}
-              onFocus={() => setShowQuickActions(false)}
+              onFocus={() => {
+                setShowQuickActions(false);
+                setTimeout(() => scrollToBottom(false), 200);
+              }}
+              blurOnSubmit={false}
+              returnKeyType="default"
+              textAlignVertical="center"
             />
             
             {inputText.trim() ? (

@@ -32,8 +32,9 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
 
 const styles = StyleSheet.create({
   container: {
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
     maxWidth: '80%',
+    marginHorizontal: Spacing.sm,
   },
   containerUser: {
     alignSelf: 'flex-end',
@@ -44,8 +45,14 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   bubble: {
-    padding: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
     borderRadius: BorderRadius.xl,
+    shadowColor: Colors.shadow,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
   },
   bubbleUser: {
     backgroundColor: Colors.chat.userBubble,
@@ -54,6 +61,8 @@ const styles = StyleSheet.create({
   bubbleAI: {
     backgroundColor: Colors.chat.aiBubble,
     borderBottomLeftRadius: BorderRadius.xs,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
   },
   text: {
     ...Typography.body,

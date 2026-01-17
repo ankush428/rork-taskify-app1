@@ -194,7 +194,15 @@ export default function LoginScreen() {
                       onChangeText={setPassword}
                       secureTextEntry={!showPassword}
                       autoCapitalize="none"
-                      autoComplete={mode === 'login' ? 'password' : 'new-password'}
+                      autoCorrect={false}
+                      autoComplete={Platform.OS === 'ios' ? (mode === 'login' ? 'password' : 'new-password') : 'off'}
+                      textContentType={Platform.OS === 'ios' ? (mode === 'login' ? 'password' : 'newPassword') : undefined}
+                      keyboardType="default"
+                      returnKeyType="done"
+                      enablesReturnKeyAutomatically={true}
+                      editable={true}
+                      selectTextOnFocus={false}
+                      clearButtonMode="never"
                     />
                     <TouchableOpacity
                       onPress={() => setShowPassword(!showPassword)}
@@ -364,6 +372,9 @@ const styles = StyleSheet.create({
     flex: 1,
     ...Typography.body,
     color: Colors.text,
+    height: '100%',
+    paddingVertical: 0,
+    paddingHorizontal: 0,
   },
   submitButton: {
     flexDirection: 'row',
