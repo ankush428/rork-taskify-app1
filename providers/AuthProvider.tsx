@@ -67,18 +67,41 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         .eq('id', profileData.id);
 
       // If update failed because profile doesn't exist, try insert
-      if (updateError && updateError.code === 'PGRST116') {
-        const { error: insertError } = await supabase
+      if (updateError && (updateError.code === 'PGRST116' || updateError.message?.includes('No rows') || updateError.message?.includes('not found'))) {
+        console.log('[AuthProvider] Profile not found, creating new profile...');
+        const { error: insertError, data: insertedData } = await supabase
           .from('profiles')
-          .insert(profileData);
+          .insert({
+            ...profileData,
+            created_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
 
         if (insertError) {
-          // Silently fail - trigger will handle it
-          console.warn('[AuthProvider] Profile insert failed (may be handled by trigger):', insertError.message);
+          console.error('[AuthProvider] Profile insert failed:', insertError);
+          console.error('[AuthProvider] Insert error code:', insertError.code);
+          console.error('[AuthProvider] Insert error message:', insertError.message);
+          console.error('[AuthProvider] Insert error details:', insertError.details);
+          console.error('[AuthProvider] Profile data attempted:', JSON.stringify(profileData, null, 2));
+          
+          // If RLS is blocking, try to fetch profile to see if it exists
+          const { data: existingProfile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', profileData.id)
+            .single();
+            
+          if (existingProfile) {
+            console.log('[AuthProvider] Profile actually exists, update should have worked');
+          }
+        } else {
+          console.log('[AuthProvider] Profile created successfully:', insertedData?.id);
         }
       } else if (updateError) {
         // Other errors - log but don't throw
         console.warn('[AuthProvider] Profile update error:', updateError.message);
+        console.warn('[AuthProvider] Update error code:', updateError.code);
       } else {
         console.log('[AuthProvider] Profile updated successfully');
       }
@@ -258,12 +281,43 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
   const { mutate: signOutMutate, isPending: isSigningOut } = useMutation({
     mutationFn: async () => {
+      console.log('[AuthProvider] Signing out...');
+      // Clear auth state immediately
+      setAuthState({
+        user: null,
+        session: null,
+        isLoading: false,
+        isAuthenticated: false,
+      });
+      
+      // Sign out from Supabase
       const { error } = await supabase.auth.signOut();
-      if (error) throw error;
+      if (error) {
+        console.error('[AuthProvider] Sign-out error:', error);
+        throw error;
+      }
+      
+      console.log('[AuthProvider] Signed out successfully');
+    },
+    onSuccess: () => {
+      // Ensure state is cleared
+      setAuthState({
+        user: null,
+        session: null,
+        isLoading: false,
+        isAuthenticated: false,
+      });
     },
     onError: (error: Error) => {
       console.error('[AuthProvider] Sign-out error:', error);
-      Alert.alert('Sign Out Failed', error.message);
+      // Still clear state even if there's an error
+      setAuthState({
+        user: null,
+        session: null,
+        isLoading: false,
+        isAuthenticated: false,
+      });
+      Alert.alert('Sign Out Failed', error.message || 'Unable to sign out. Please try again.');
     },
   });
 

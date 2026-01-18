@@ -208,7 +208,14 @@ export default function SettingsScreen() {
             <SettingItem
               icon={<LogOut size={20} color={Colors.error} />}
               title={isSigningOut ? 'Signing Out...' : 'Sign Out'}
-              onPress={signOut}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                signOut();
+                // Navigate to login after a brief delay
+                setTimeout(() => {
+                  router.replace('/login');
+                }, 500);
+              }}
               showChevron={false}
             />
           </View>
