@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Switch,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -190,10 +191,20 @@ export default function SettingsScreen() {
                   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   setVersionPressCount(0);
                   // Check if user is admin before redirecting
-                  const { AdminService } = await import('@/lib/adminService');
-                  const isAdmin = await AdminService.isAdmin(user?.id || '', user?.email);
-                  if (isAdmin) {
-                    router.push('/admin');
+                  try {
+                    const { AdminService } = await import('@/lib/adminService');
+                    console.log('[Settings] Checking admin access for:', user?.email);
+                    const isAdmin = await AdminService.isAdmin(user?.id || '', user?.email);
+                    console.log('[Settings] Admin check result:', isAdmin);
+                    if (isAdmin) {
+                      console.log('[Settings] Navigating to /admin');
+                      router.push('/admin');
+                    } else {
+                      Alert.alert('Access Denied', 'Admin access is restricted.');
+                    }
+                  } catch (error) {
+                    console.error('[Settings] Error checking admin:', error);
+                    Alert.alert('Error', 'Failed to check admin access.');
                   }
                 } else {
                   setTimeout(() => setVersionPressCount(0), 2000);

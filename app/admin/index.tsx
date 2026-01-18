@@ -13,13 +13,23 @@ export default function AdminIndex() {
   useEffect(() => {
     async function checkAdminAccess() {
       if (authLoading || !user) {
+        console.log('[AdminIndex] Waiting for auth...', { authLoading, hasUser: !!user });
         return;
       }
 
+      console.log('[AdminIndex] Checking admin access for:', { userId: user.id, email: user.email });
       setIsChecking(true);
-      const adminStatus = await AdminService.isAdmin(user.id, user.email);
-      setIsAdmin(adminStatus);
-      setIsChecking(false);
+      
+      try {
+        const adminStatus = await AdminService.isAdmin(user.id, user.email);
+        console.log('[AdminIndex] Admin check result:', adminStatus);
+        setIsAdmin(adminStatus);
+      } catch (error) {
+        console.error('[AdminIndex] Error checking admin:', error);
+        setIsAdmin(false);
+      } finally {
+        setIsChecking(false);
+      }
     }
 
     checkAdminAccess();
