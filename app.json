@@ -29,7 +29,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "app.rork.taskify_app_jgtfejl",
+      "package": "app.rork.taskify",
       "permissions": [
         "android.permission.VIBRATE"
       ]
