@@ -10,35 +10,65 @@ import {
   Platform,
   Animated,
   Keyboard,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Send, Sparkles, Plus, Mic } from 'lucide-react-native';
+import { Audio } from 'expo-av';
+import { Send, Sparkles, Plus, Mic, Square, CheckCircle2, Circle, AlertCircle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
 import { Typography, Spacing, BorderRadius } from '@/constants/typography';
 import { useApp } from '@/providers/AppProvider';
 import { useAuth } from '@/providers/AuthProvider';
-import { AIService } from '@/lib/aiService';
-import ChatBubble from '@/components/ChatBubble';
+import { useTaskAI, transcribeAudio } from '@/lib/rorkAI';
 import ChatTaskCard from '@/components/ChatTaskCard';
-import { ChatMessage, Task } from '@/types';
-
-interface EnhancedChatMessage extends ChatMessage {
-  task?: Task;
-}
+import { Task } from '@/types';
 
 export default function ChatScreen() {
-  const { chatMessages, addChatMessage, todayTasks, tasks, addTask } = useApp();
+  const { 
+    tasks, 
+    todayTasks, 
+    upcomingTasks, 
+    overdueTasks, 
+    completedTasks,
+    addTask, 
+    updateTask, 
+    deleteTask, 
+    toggleTaskComplete 
+  } = useApp();
   const { user } = useAuth();
   const [inputText, setInputText] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
   const [showQuickActions, setShowQuickActions] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const sendScale = useRef(new Animated.Value(1)).current;
   const typingAnim = useRef(new Animated.Value(0)).current;
   const quickActionsAnim = useRef(new Animated.Value(0)).current;
+  const micScale = useRef(new Animated.Value(1)).current;
   const inputRef = useRef<TextInput>(null);
+
+  const agent = useTaskAI({
+    tasks,
+    todayTasks,
+    upcomingTasks,
+    overdueTasks,
+    completedTasks,
+    onAddTask: addTask,
+    onUpdateTask: updateTask,
+    onDeleteTask: deleteTask,
+    onToggleComplete: toggleTaskComplete,
+  });
+
+  const { messages, error, sendMessage, setMessages } = agent;
+
+  const isTyping = messages.length > 0 && 
+    messages[messages.length - 1]?.role === 'user' &&
+    messages[messages.length - 1]?.parts?.some(p => 
+      p.type === 'tool' && (p.state === 'input-streaming' || p.state === 'input-available')
+    );
 
   useEffect(() => {
     if (isTyping) {
@@ -61,14 +91,12 @@ export default function ChatScreen() {
     }
   }, [isTyping, typingAnim]);
 
-  // Auto-scroll when new messages arrive
   useEffect(() => {
-    if (chatMessages.length > 0) {
+    if (messages.length > 0) {
       scrollToBottom(true);
     }
-  }, [chatMessages.length, scrollToBottom]);
+  }, [messages.length]);
 
-  // Handle keyboard show/hide for better scrolling
   useEffect(() => {
     const keyboardWillShow = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
@@ -78,16 +106,35 @@ export default function ChatScreen() {
     );
     const keyboardWillHide = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
-      () => {
-        // Optional: scroll to bottom when keyboard hides
-      }
+      () => {}
     );
 
     return () => {
       keyboardWillShow.remove();
       keyboardWillHide.remove();
     };
-  }, [scrollToBottom]);
+  }, []);
+
+  useEffect(() => {
+    if (isRecording) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(micScale, {
+            toValue: 1.2,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(micScale, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      micScale.setValue(1);
+    }
+  }, [isRecording, micScale]);
 
   const scrollToBottom = useCallback((animated: boolean = true) => {
     setTimeout(() => {
@@ -95,69 +142,108 @@ export default function ChatScreen() {
     }, 100);
   }, []);
 
-  const handleSend = async () => {
-    if (!inputText.trim() || !user?.id) return;
+  const handleSend = useCallback(async () => {
+    if (!inputText.trim()) return;
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Keyboard.dismiss();
     const userMessage = inputText.trim();
     setInputText('');
-    addChatMessage(userMessage, 'user');
     scrollToBottom();
 
-    setIsTyping(true);
+    try {
+      await sendMessage(userMessage);
+      scrollToBottom();
+    } catch (err) {
+      console.error('[ChatScreen] Error sending message:', err);
+    }
+  }, [inputText, sendMessage, scrollToBottom]);
+
+  const startRecording = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      console.log('[ChatScreen] Web recording not implemented');
+      return;
+    }
 
     try {
-      // Prepare conversation history
-      const conversationHistory = chatMessages.slice(-10).map(msg => ({
-        role: msg.role,
-        content: msg.content,
-      }));
+      console.log('[ChatScreen] Starting recording...');
+      await Audio.requestPermissionsAsync();
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
 
-      // Process message with AI service
-      const aiResponse = await AIService.processMessage(user.id, userMessage, conversationHistory);
+      const { recording: newRecording } = await Audio.Recording.createAsync({
+        android: {
+          extension: '.m4a',
+          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+          audioEncoder: Audio.AndroidAudioEncoder.AAC,
+          sampleRate: 44100,
+          numberOfChannels: 2,
+          bitRate: 128000,
+        },
+        ios: {
+          extension: '.wav',
+          outputFormat: Audio.IOSOutputFormat.LINEARPCM,
+          audioQuality: Audio.IOSAudioQuality.HIGH,
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          bitRate: 128000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+        web: {},
+      });
 
-      setIsTyping(false);
+      setRecording(newRecording);
+      setIsRecording(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    } catch (err) {
+      console.error('[ChatScreen] Failed to start recording:', err);
+    }
+  }, []);
 
-      // Add AI response
-      addChatMessage(aiResponse.reply, 'assistant');
-      scrollToBottom();
+  const stopRecording = useCallback(async () => {
+    if (!recording) return;
 
-      // If tasks were extracted, create them (with confirmation if required)
-      if (aiResponse.extractedTasks && aiResponse.extractedTasks.length > 0) {
-        if (!aiResponse.requiresConfirmation) {
-          // Auto-create tasks
-          for (const extractedTask of aiResponse.extractedTasks) {
-            addTask({
-              title: extractedTask.title,
-              description: extractedTask.description,
-              dueDate: extractedTask.dueDate,
-              dueTime: extractedTask.dueTime,
-              priority: extractedTask.priority || 'medium',
-              category: extractedTask.category || 'personal',
-              status: 'pending',
-              isRecurring: extractedTask.isRecurring,
-              recurringPattern: extractedTask.recurringPattern,
-            });
-          }
-        } else {
-          // Show confirmation message - tasks will be created when user confirms
-          // For now, we'll create them but mention it in the response
-          const confirmMessage = `I've prepared ${aiResponse.extractedTasks.length} task${aiResponse.extractedTasks.length > 1 ? 's' : ''} for you. Would you like me to add ${aiResponse.extractedTasks.length > 1 ? 'them' : 'it'}?`;
-          addChatMessage(confirmMessage, 'assistant');
-          // TODO: Implement confirmation flow
+    console.log('[ChatScreen] Stopping recording...');
+    setIsRecording(false);
+    setIsTranscribing(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    try {
+      await recording.stopAndUnloadAsync();
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+      });
+
+      const uri = recording.getURI();
+      setRecording(null);
+
+      if (uri) {
+        const uriParts = uri.split('.');
+        const fileType = uriParts[uriParts.length - 1];
+        
+        const transcription = await transcribeAudio(uri, fileType);
+        if (transcription) {
+          setInputText(transcription);
         }
       }
-    } catch (error) {
-      console.error('[ChatScreen] Error processing message:', error);
-      setIsTyping(false);
-      
-      // Fallback response
-      const fallbackResponse = "I'm having trouble processing that right now. Could you try rephrasing your request?";
-      addChatMessage(fallbackResponse, 'assistant');
-      scrollToBottom();
+    } catch (err) {
+      console.error('[ChatScreen] Error stopping recording:', err);
+    } finally {
+      setIsTranscribing(false);
     }
-  };
+  }, [recording]);
+
+  const handleMicPress = useCallback(() => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  }, [isRecording, startRecording, stopRecording]);
 
   const handleSendPressIn = () => {
     Animated.spring(sendScale, {
@@ -185,6 +271,12 @@ export default function ChatScreen() {
     setShowQuickActions(!showQuickActions);
   };
 
+  const handleQuickAction = useCallback((text: string) => {
+    setShowQuickActions(false);
+    setInputText(text);
+    inputRef.current?.focus();
+  }, []);
+
   const quickActionScale = quickActionsAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0.8, 1],
@@ -195,16 +287,149 @@ export default function ChatScreen() {
     outputRange: [0, 1],
   });
 
-  const renderMessage = (message: EnhancedChatMessage) => {
-    if (message.task) {
+  const renderToolOutput = (toolName: string, output: unknown) => {
+    if (toolName === 'listTasks' && output && typeof output === 'object' && 'tasks' in output) {
+      const taskList = (output as { tasks: Array<{ id: string; title: string; priority: string; status: string; dueDate?: string }> }).tasks;
+      if (taskList.length === 0) {
+        return (
+          <View style={styles.emptyTasksCard}>
+            <Circle size={20} color={Colors.textTertiary} />
+            <Text style={styles.emptyTasksText}>No tasks found</Text>
+          </View>
+        );
+      }
       return (
-        <View key={message.id} style={styles.taskMessageContainer}>
-          <ChatTaskCard task={message.task} />
+        <View style={styles.taskListContainer}>
+          {taskList.slice(0, 5).map((task) => (
+            <View key={task.id} style={styles.miniTaskCard}>
+              {task.status === 'completed' ? (
+                <CheckCircle2 size={18} color={Colors.success} />
+              ) : (
+                <Circle size={18} color={Colors.primary} />
+              )}
+              <View style={styles.miniTaskContent}>
+                <Text style={styles.miniTaskTitle} numberOfLines={1}>{task.title}</Text>
+                {task.dueDate && (
+                  <Text style={styles.miniTaskDue}>{task.dueDate}</Text>
+                )}
+              </View>
+              <View style={[styles.priorityDot, { backgroundColor: getPriorityColor(task.priority) }]} />
+            </View>
+          ))}
         </View>
       );
     }
-    return <ChatBubble key={message.id} message={message} />;
+    
+    if (toolName === 'getTaskSummary' && output && typeof output === 'object') {
+      const summary = output as { totalTasks: number; todayCount: number; overdueCount: number; completedCount: number };
+      return (
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryRow}>
+            <View style={styles.summaryItem}>
+              <Text style={styles.summaryNumber}>{summary.todayCount}</Text>
+              <Text style={styles.summaryLabel}>Today</Text>
+            </View>
+            <View style={styles.summaryItem}>
+              <Text style={[styles.summaryNumber, summary.overdueCount > 0 && styles.overdueNumber]}>{summary.overdueCount}</Text>
+              <Text style={styles.summaryLabel}>Overdue</Text>
+            </View>
+            <View style={styles.summaryItem}>
+              <Text style={[styles.summaryNumber, styles.completedNumber]}>{summary.completedCount}</Text>
+              <Text style={styles.summaryLabel}>Done</Text>
+            </View>
+          </View>
+        </View>
+      );
+    }
+
+    return null;
   };
+
+  const getPriorityColor = (priority: string) => {
+    switch (priority) {
+      case 'high': return Colors.error;
+      case 'medium': return Colors.warning;
+      case 'low': return Colors.success;
+      default: return Colors.textTertiary;
+    }
+  };
+
+  const renderMessage = (message: typeof messages[0], index: number) => {
+    const isUser = message.role === 'user';
+    
+    return (
+      <View key={message.id || index} style={[styles.messageContainer, isUser && styles.userMessageContainer]}>
+        {message.parts.map((part, partIndex) => {
+          const partKey = `${message.id || index}-${partIndex}`;
+          
+          switch (part.type) {
+            case 'text':
+              if (!part.text) return null;
+              return (
+                <View 
+                  key={partKey} 
+                  style={[styles.bubble, isUser ? styles.userBubble : styles.aiBubble]}
+                >
+                  <Text style={[styles.messageText, isUser && styles.userMessageText]}>
+                    {part.text}
+                  </Text>
+                </View>
+              );
+            
+            case 'tool':
+              if (part.state === 'output-available' && part.output) {
+                const customRender = renderToolOutput(part.toolName, part.output);
+                if (customRender) {
+                  return <View key={partKey}>{customRender}</View>;
+                }
+                
+                if (typeof part.output === 'object' && 'success' in (part.output as object)) {
+                  const result = part.output as { success: boolean; message: string };
+                  return (
+                    <View key={partKey} style={styles.toolResultCard}>
+                      {result.success ? (
+                        <CheckCircle2 size={18} color={Colors.success} />
+                      ) : (
+                        <AlertCircle size={18} color={Colors.error} />
+                      )}
+                      <Text style={styles.toolResultText}>{result.message}</Text>
+                    </View>
+                  );
+                }
+              }
+              
+              if (part.state === 'input-streaming' || part.state === 'input-available') {
+                return (
+                  <View key={partKey} style={styles.toolLoadingCard}>
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                    <Text style={styles.toolLoadingText}>Processing...</Text>
+                  </View>
+                );
+              }
+              
+              if (part.state === 'output-error') {
+                return (
+                  <View key={partKey} style={styles.toolErrorCard}>
+                    <AlertCircle size={18} color={Colors.error} />
+                    <Text style={styles.toolErrorText}>Something went wrong</Text>
+                  </View>
+                );
+              }
+              
+              return null;
+            
+            default:
+              return null;
+          }
+        })}
+      </View>
+    );
+  };
+
+  const hasAssistantResponse = messages.some(m => m.role === 'assistant');
+  const isWaitingForResponse = messages.length > 0 && 
+    messages[messages.length - 1]?.role === 'user' && 
+    !hasAssistantResponse;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -218,7 +443,7 @@ export default function ChatScreen() {
           </View>
           <View>
             <Text style={styles.headerTitle}>Task Assistant</Text>
-            <Text style={styles.headerSubtitle}>Always here to help</Text>
+            <Text style={styles.headerSubtitle}>Powered by AI</Text>
           </View>
         </View>
         {user?.avatar && (
@@ -243,9 +468,6 @@ export default function ChatScreen() {
           onContentSizeChange={() => scrollToBottom(false)}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-          maintainVisibleContentPosition={{
-            minIndexForVisible: 0,
-          }}
         >
           <View style={styles.welcomeContainer}>
             <View style={styles.welcomeIcon}>
@@ -253,13 +475,13 @@ export default function ChatScreen() {
             </View>
             <Text style={styles.welcomeTitle}>Hi{user?.name ? `, ${user.name.split(' ')[0]}` : ''}! 👋</Text>
             <Text style={styles.welcomeText}>
-              I&apos;m your personal task assistant. Ask me about your tasks, or let me help you stay organized.
+              I&apos;m your AI task assistant. Ask me to create tasks, show your schedule, or help you stay organized.
             </Text>
           </View>
 
-          {chatMessages.map((message) => renderMessage(message))}
+          {messages.map((message, index) => renderMessage(message, index))}
           
-          {isTyping && (
+          {isWaitingForResponse && (
             <View style={styles.typingContainer}>
               <View style={styles.typingBubble}>
                 <Animated.View
@@ -290,6 +512,13 @@ export default function ChatScreen() {
               </View>
             </View>
           )}
+
+          {error && (
+            <View style={styles.errorContainer}>
+              <AlertCircle size={18} color={Colors.error} />
+              <Text style={styles.errorText}>Something went wrong. Please try again.</Text>
+            </View>
+          )}
         </ScrollView>
 
         {showQuickActions && (
@@ -302,14 +531,29 @@ export default function ChatScreen() {
               },
             ]}
           >
-            <TouchableOpacity style={styles.quickAction}>
+            <TouchableOpacity 
+              style={styles.quickAction}
+              onPress={() => handleQuickAction("Show my tasks for today")}
+            >
               <Text style={styles.quickActionText}>📋 Show my tasks</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.quickAction}>
+            <TouchableOpacity 
+              style={styles.quickAction}
+              onPress={() => handleQuickAction("What's due today?")}
+            >
               <Text style={styles.quickActionText}>⏰ What&apos;s due today?</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.quickAction}>
+            <TouchableOpacity 
+              style={styles.quickAction}
+              onPress={() => handleQuickAction("Create a new task")}
+            >
               <Text style={styles.quickActionText}>✨ Add a new task</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.quickAction}
+              onPress={() => handleQuickAction("Give me a summary of my tasks")}
+            >
+              <Text style={styles.quickActionText}>📊 Task summary</Text>
             </TouchableOpacity>
           </Animated.View>
         )}
@@ -330,12 +574,13 @@ export default function ChatScreen() {
             <TextInput
               ref={inputRef}
               style={styles.input}
-              placeholder="Message..."
-              placeholderTextColor={Colors.textTertiary}
+              placeholder={isRecording ? "Listening..." : "Message..."}
+              placeholderTextColor={isRecording ? Colors.primary : Colors.textTertiary}
               value={inputText}
               onChangeText={setInputText}
               multiline
               maxLength={500}
+              editable={!isRecording && !isTranscribing}
               onFocus={() => {
                 setShowQuickActions(false);
                 setTimeout(() => scrollToBottom(false), 200);
@@ -357,10 +602,23 @@ export default function ChatScreen() {
                   <Send size={18} color={Colors.textInverse} />
                 </TouchableOpacity>
               </Animated.View>
+            ) : isTranscribing ? (
+              <View style={styles.micButton}>
+                <ActivityIndicator size="small" color={Colors.primary} />
+              </View>
             ) : (
-              <TouchableOpacity style={styles.micButton}>
-                <Mic size={20} color={Colors.textTertiary} />
-              </TouchableOpacity>
+              <Animated.View style={{ transform: [{ scale: micScale }] }}>
+                <TouchableOpacity 
+                  style={[styles.micButton, isRecording && styles.micButtonActive]}
+                  onPress={handleMicPress}
+                >
+                  {isRecording ? (
+                    <Square size={16} color={Colors.textInverse} fill={Colors.textInverse} />
+                  ) : (
+                    <Mic size={20} color={Colors.textTertiary} />
+                  )}
+                </TouchableOpacity>
+              </Animated.View>
             )}
           </View>
         </View>
@@ -460,9 +718,34 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: Spacing.xl,
   },
-  taskMessageContainer: {
-    alignSelf: 'flex-start',
+  messageContainer: {
     marginBottom: Spacing.md,
+    alignItems: 'flex-start',
+  },
+  userMessageContainer: {
+    alignItems: 'flex-end',
+  },
+  bubble: {
+    maxWidth: '85%',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.xl,
+    marginBottom: Spacing.xs,
+  },
+  userBubble: {
+    backgroundColor: Colors.primary,
+    borderBottomRightRadius: BorderRadius.xs,
+  },
+  aiBubble: {
+    backgroundColor: Colors.chat.aiBubble,
+    borderBottomLeftRadius: BorderRadius.xs,
+  },
+  messageText: {
+    ...Typography.body,
+    color: Colors.text,
+  },
+  userMessageText: {
+    color: Colors.textInverse,
   },
   typingContainer: {
     alignSelf: 'flex-start',
@@ -547,5 +830,141 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  micButtonActive: {
+    backgroundColor: Colors.error,
+  },
+  toolResultCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.surfaceSecondary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    marginTop: Spacing.xs,
+  },
+  toolResultText: {
+    ...Typography.subhead,
+    color: Colors.text,
+    flex: 1,
+  },
+  toolLoadingCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.surfaceSecondary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    marginTop: Spacing.xs,
+  },
+  toolLoadingText: {
+    ...Typography.subhead,
+    color: Colors.textSecondary,
+  },
+  toolErrorCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.errorMuted,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    marginTop: Spacing.xs,
+  },
+  toolErrorText: {
+    ...Typography.subhead,
+    color: Colors.error,
+  },
+  taskListContainer: {
+    gap: Spacing.xs,
+    marginTop: Spacing.xs,
+  },
+  miniTaskCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  miniTaskContent: {
+    flex: 1,
+  },
+  miniTaskTitle: {
+    ...Typography.subhead,
+    color: Colors.text,
+  },
+  miniTaskDue: {
+    ...Typography.caption2,
+    color: Colors.textTertiary,
+  },
+  priorityDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  emptyTasksCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.surfaceSecondary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    marginTop: Spacing.xs,
+  },
+  emptyTasksText: {
+    ...Typography.subhead,
+    color: Colors.textTertiary,
+  },
+  summaryCard: {
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    marginTop: Spacing.xs,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  summaryItem: {
+    alignItems: 'center',
+  },
+  summaryNumber: {
+    ...Typography.title2,
+    color: Colors.text,
+  },
+  overdueNumber: {
+    color: Colors.error,
+  },
+  completedNumber: {
+    color: Colors.success,
+  },
+  summaryLabel: {
+    ...Typography.caption1,
+    color: Colors.textSecondary,
+  },
+  errorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.errorMuted,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    marginTop: Spacing.md,
+  },
+  errorText: {
+    ...Typography.subhead,
+    color: Colors.error,
+    flex: 1,
   },
 });

@@ -17,9 +17,13 @@ const Colors = {
   borderLight: '#F3F4F6',
   
   success: '#10B981',
+  successMuted: '#D1FAE5',
   warning: '#F59E0B',
+  warningMuted: '#FEF3C7',
   error: '#EF4444',
+  errorMuted: '#FEE2E2',
   info: '#3B82F6',
+  infoMuted: '#DBEAFE',
   
   overlay: 'rgba(0, 0, 0, 0.5)',
   shadow: 'rgba(0, 0, 0, 0.08)',
